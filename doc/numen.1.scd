@@ -192,6 +192,16 @@ Tags have phrases act specially.
 
 	*@transcribe scribe: pen head -n 1 $NUMEN_STATE_DIR/transcripts*
 
+*@word*
+	Do literal speech recognition of the next word, record the results in
+	*$NUMEN_STATE_DIR/transcripts*, perform the action, and then perform
+	the rest of the sentence as phrases. For example, to type a word and
+	then press Return:
+
+	*@word word: pen head -n 1 $NUMEN_STATE_DIR/transcripts*
+
+	and say "word hello enter".
+
 *@gadget* *@uinput* *@x11*
 	If a phrase is tagged with any of these, ignore it unless *numen*
 	was started in one of their modes.

@@ -124,8 +124,16 @@ func knownSpecialPhrase(phrase string) bool {
 }
 func knownTag(tag string) bool {
 	switch tag {
-	case "cancel", "gadget", "uinput", "transcribe", "x11":
+	case "cancel", "gadget", "uinput", "transcribe", "word", "x11":
 		return true
+	}
+	return false
+}
+func hasTag(action Action, tag string) bool {
+	for _, t := range action.Tags {
+		if t == tag {
+			return true
+		}
 	}
 	return false
 }
@@ -256,13 +264,64 @@ func handleTranscribe(h *Handler, results []vox.Result, action Action) {
 	handle(h, action.Text)
 }
 
+// performable reports whether a result can be performed: either every word
+// is a phrase, or a phrase before the unknown words transcribes them.
+func performable(result vox.Result, actions map[string]Action) bool {
+	if result.Valid {
+		return true
+	}
+	for _, p := range result.Phrases {
+		a := actions[p.Text]
+		if hasTag(a, "transcribe") || hasTag(a, "word") {
+			return true
+		}
+	}
+	return false
+}
+
+// handleWord transcribes the first word of audio, performs action, and then
+// performs the audio after that word as commands.
+func handleWord(cmdRec, transRec *vox.Recognizer, h *Handler, phrase string, action Action, audio []byte, actions map[string]Action, phraseLog *os.File) string {
+	_, err := transRec.Accept(audio)
+	if err != nil {
+		panic(err)
+	}
+	results := transRec.FinalResults()
+	var b bytes.Buffer
+	seen := make(map[string]bool)
+	for _, r := range results {
+		if len(r.Phrases) > 0 && !seen[r.Phrases[0].Text] {
+			seen[r.Phrases[0].Text] = true
+			b.WriteString(r.Phrases[0].Text + "\n")
+		}
+	}
+	writeStateFile("transcripts", b.Bytes())
+	handle(h, action.Text)
+	writeLine(phraseLog, phrase)
+
+	if len(results) == 0 || len(results[0].Phrases) == 0 {
+		return ""
+	}
+	rest := transRec.Audio[results[0].Phrases[0].End:]
+	_, err = cmdRec.Accept(rest)
+	if err != nil {
+		panic(err)
+	}
+	for _, result := range cmdRec.FinalResults() {
+		if result.Text != "" && performable(result, actions) {
+			return do(cmdRec, transRec, h, result.Phrases, actions, cmdRec.Audio, phraseLog)
+		}
+	}
+	return ""
+}
+
 func do(cmdRec, transRec *vox.Recognizer, handler *Handler, sentence []vox.PhraseResult, actions map[string]Action, audio []byte, phraseLog *os.File) string {
 	cancel := 0
 CANCEL:
 	for i := range sentence {
 		act, _ := actions[sentence[i].Text]
 		for _, tag := range act.Tags {
-			if tag == "transcribe" {
+			if tag == "transcribe" || tag == "word" {
 				break CANCEL
 			}
 			if tag == "cancel" {
@@ -275,6 +334,9 @@ CANCEL:
 	for i := range sentence {
 		phrase := sentence[i].Text
 		act, _ := actions[phrase]
+		if hasTag(act, "word") {
+			return handleWord(cmdRec, transRec, handler, phrase, act, audio[sentence[i].End:], actions, phraseLog)
+		}
 		transcribe := false
 		for _, tag := range act.Tags {
 			if tag == "transcribe" {
@@ -477,6 +539,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+		transRec.SetWords(true)
 		transRec.SetMaxAlternatives(10)
 	}
 	defer cmdRec.Free()
@@ -645,21 +708,8 @@ func main() {
 					if result.Text == "" {
 						continue
 					}
-					sentence := result.Phrases
-					ok := result.Valid
-					if !ok {
-						for p := range sentence {
-							a, _ := actions[sentence[p].Text]
-							for _, t := range a.Tags {
-								if t == "transcribe" {
-									ok = true
-									break
-								}
-							}
-						}
-					}
-					if ok {
-						transcribing = do(cmdRec, transRec, handler, sentence, actions, cmdRec.Audio, opts.PhraseLog)
+					if performable(result, actions) {
+						transcribing = do(cmdRec, transRec, handler, result.Phrases, actions, cmdRec.Audio, opts.PhraseLog)
 						if transcribing == "" {
 							handle(handler, actions["<complete>"].Text)
 						}
